@@ -54,9 +54,9 @@ const pendingMessages = new Map();
 /**
  * Sunucu durumu
  */
-app.get('/api/health', async (req, res) => {
+app.get('/api/health', (req, res) => {
     try {
-        const userCount = await db.getUserCount();
+        const userCount = db.getUserCount();
         res.json({
             status: 'ok',
             server: 'SecureChat Backend v1.1 (SQLite)',
@@ -74,7 +74,7 @@ app.get('/api/health', async (req, res) => {
  * Kullanıcı kaydı
  * Body: { email, passwordHash, displayName, publicKey }
  */
-app.post('/api/register', async (req, res) => {
+app.post('/api/register', (req, res) => {
     try {
         const { email, passwordHash, displayName, publicKey } = req.body;
 
@@ -96,7 +96,7 @@ app.post('/api/register', async (req, res) => {
             createdAt: new Date().toISOString(),
         };
 
-        const result = await db.createUser(newUser);
+        const result = db.createUser(newUser);
         if (!result.success) {
             return res.status(409).json(result);
         }
@@ -118,7 +118,7 @@ app.post('/api/register', async (req, res) => {
  * Kullanıcı girişi
  * Body: { email, passwordHash }
  */
-app.post('/api/login', async (req, res) => {
+app.post('/api/login', (req, res) => {
     try {
         const { email, passwordHash } = req.body;
 
@@ -129,7 +129,7 @@ app.post('/api/login', async (req, res) => {
             });
         }
 
-        const foundUser = await db.getUserByEmail(email);
+        const foundUser = db.getUserByEmail(email);
 
         if (!foundUser) {
             return res.status(401).json({
@@ -151,7 +151,7 @@ app.post('/api/login', async (req, res) => {
             success: true,
             userId: foundUser.userId,
             displayName: foundUser.displayName,
-            profileImage: foundUser.profileImage, // Profil resmi varsa istemciye gönderelim
+            profileImage: foundUser.profileImage,
             message: 'Giriş başarılı',
         });
     } catch (error) {
@@ -164,10 +164,10 @@ app.post('/api/login', async (req, res) => {
  * Kullanıcı listesi
  * Query: ?exclude=userId (kendini listeden çıkar)
  */
-app.get('/api/users', async (req, res) => {
+app.get('/api/users', (req, res) => {
     try {
         const excludeId = req.query.exclude;
-        const dbUsers = await db.getAllUsers(excludeId);
+        const dbUsers = db.getAllUsers(excludeId);
 
         const userList = dbUsers.map(u => ({
             userId: u.userId,
@@ -188,7 +188,7 @@ app.get('/api/users', async (req, res) => {
 /**
  * Kullanıcı bilgilerini güncelle (isim veya şifre)
  */
-app.put('/api/user/update', async (req, res) => {
+app.put('/api/user/update', (req, res) => {
     try {
         const { userId, displayName, passwordHash } = req.body;
         
@@ -196,15 +196,14 @@ app.put('/api/user/update', async (req, res) => {
              return res.status(400).json({ success: false, message: 'Gerekli bilgiler eksik' });
         }
 
-        const user = await db.getUserById(userId);
+        const user = db.getUserById(userId);
         if (!user) {
             return res.status(404).json({ success: false, message: 'Kullanıcı bulunamadı' });
         }
 
-        await db.updateUser(userId, displayName, passwordHash);
+        db.updateUser(userId, displayName, passwordHash);
         console.log(`[Update] Kullanıcı bilgileri güncellendi: ${userId}`);
         
-        // Diğer kullanıcılara yeni listeyi (isim değiştiyse) bildir
         broadcastUserList();
 
         res.json({ success: true, message: 'Profil güncellendi' });
@@ -217,7 +216,7 @@ app.put('/api/user/update', async (req, res) => {
 /**
  * Profil resmi yükle/güncelle (Base64)
  */
-app.post('/api/user/avatar', async (req, res) => {
+app.post('/api/user/avatar', (req, res) => {
     try {
         const { userId, imageBase64 } = req.body;
         
@@ -225,10 +224,9 @@ app.post('/api/user/avatar', async (req, res) => {
              return res.status(400).json({ success: false, message: 'Resim verisi eksik' });
         }
 
-        await db.updateUserAvatar(userId, imageBase64);
+        db.updateUserAvatar(userId, imageBase64);
         console.log(`[Avatar] Profil resmi güncellendi: ${userId}`);
         
-        // Diğer kullanıcılara yeni listeyi bildir
         broadcastUserList();
         
         res.json({ success: true, message: 'Profil resmi güncellendi' });
