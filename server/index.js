@@ -158,6 +158,40 @@ app.get('/api/users', (req, res) => {
     }
 });
 
+app.post('/api/update-public-key', (req, res) => {
+    try {
+        const { userId, publicKey } = req.body;
+
+        if (!userId || !publicKey) {
+            return res.status(400).json({
+                success: false,
+                message: 'userId ve publicKey gereklidir',
+            });
+        }
+
+        const user = users.get(userId);
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'Kullanıcı bulunamadı',
+            });
+        }
+
+        user.publicKey = publicKey;
+        users.set(userId, user);
+
+        console.log(`[UpdateKey] ✅ Public key güncellendi: ${user.displayName}`);
+
+        res.json({
+            success: true,
+            message: 'Public key güncellendi',
+        });
+    } catch (error) {
+        console.error('[UpdateKey] Hata:', error);
+        res.status(500).json({ success: false, message: 'Sunucu hatası' });
+    }
+});
+
 // ══════════════════════════════════════
 // SOCKET.IO
 // ══════════════════════════════════════
