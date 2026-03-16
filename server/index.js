@@ -1,14 +1,6 @@
 /**
- * SecureChat Backend Server
- * 
- * Node.js + Express + Socket.IO
- * REST API + Gerçek zamanlı mesajlaşma
- * 
- * Endpoints:
- * - POST /api/register  → Kullanıcı kaydı
- * - POST /api/login     → Kullanıcı girişi
- * - GET  /api/users     → Kullanıcı listesi
- * - GET  /api/health    → Sunucu durumu
+ * SecureChat Backend Server - Basitleştirilmiş Versiyon
+ * Veritabanı yok, sadece RAM'de kullanıcı tutma
  */
 
 const express = require('express');
@@ -20,60 +12,38 @@ const { v4: uuidv4 } = require('uuid');
 const app = express();
 const server = http.createServer(app);
 
-// Socket.IO - tüm originlerden bağlantıya izin ver
 const io = new Server(server, {
     cors: {
         origin: '*',
         methods: ['GET', 'POST'],
     },
-    // Mobil bağlantılar için uzun timeout
     pingTimeout: 60000,
     pingInterval: 25000,
 });
 
-// Middleware
 app.use(cors());
-app.use(express.json({ limit: '10mb' })); // Base64 resimler için limit artırıldı
+app.use(express.json({ limit: '10mb' }));
+
+// RAM'de kullanıcı deposu
+const users = new Map(); // userId -> {userId, email, passwordHash, displayName, publicKey}
+const onlineSockets = new Map(); // userId -> socket.id
+const pendingMessages = new Map(); // userId -> [messages]
 
 // ══════════════════════════════════════
-// VERİ DEPOSU & IN-MEMORY STATE
+// REST API
 // ══════════════════════════════════════
 
-// Kullanıcı veritabanı (Kalıcı)
-const db = require('./db');
-
-// {userId} → socket mapping (Geçici, RAM'de)
-const onlineSockets = new Map();
-// Bekleyen mesajlar (çevrimdışı kullanıcılar için, RAM'de)
-const pendingMessages = new Map();
-
-// ══════════════════════════════════════
-// REST API ENDPOINTS
-// ══════════════════════════════════════
-
-/**
- * Sunucu durumu
- */
 app.get('/api/health', (req, res) => {
-    try {
-        const userCount = db.getUserCount();
-        res.json({
-            status: 'ok',
-            server: 'SecureChat Backend v1.1 (SQLite)',
-            uptime: Math.floor(process.uptime()),
-            users: userCount,
-            onlineUsers: onlineSockets.size,
-            timestamp: new Date().toISOString(),
-        });
-    } catch (error) {
-        res.status(500).json({ status: 'error' });
-    }
+    res.json({
+        status: 'ok',
+        server: 'SecureChat Backend v2.0 (In-Memory)',
+        uptime: Math.floor(process.uptime()),
+        users: users.size,
+        onlineUsers: onlineSockets.size,
+        timestamp: new Date().toISOString(),
+    });
 });
 
-/**
- * Kullanıcı kaydı
- * Body: { email, passwordHash, displayName, publicKey }
- */
 app.post('/api/register', (req, res) => {
     try {
         const { email, passwordHash, displayName, publicKey } = req.body;
@@ -85,21 +55,24 @@ app.post('/api/register', (req, res) => {
             });
         }
 
+        // Email kontrolü
+        for (let user of users.values()) {
+            if (user.email === email) {
+                return res.status(409).json({
+                    success: false,
+                    message: 'Bu email zaten kayıtlı',
+                });
+            }
+        }
+
         const userId = uuidv4();
-        const newUser = {
+        users.set(userId, {
             userId,
             email,
             passwordHash,
             displayName,
             publicKey: publicKey || '',
-            profileImage: '',
-            createdAt: new Date().toISOString(),
-        };
-
-        const result = db.createUser(newUser);
-        if (!result.success) {
-            return res.status(409).json(result);
-        }
+        });
 
         console.log(`[Register] ✅ Yeni kullanıcı: ${displayName} (${email})`);
 
@@ -114,10 +87,6 @@ app.post('/api/register', (req, res) => {
     }
 });
 
-/**
- * Kullanıcı girişi
- * Body: { email, passwordHash }
- */
 app.post('/api/login', (req, res) => {
     try {
         const { email, passwordHash } = req.body;
@@ -129,7 +98,13 @@ app.post('/api/login', (req, res) => {
             });
         }
 
-        const foundUser = db.getUserByEmail(email);
+        let foundUser = null;
+        for (let user of users.values()) {
+            if (user.email === email) {
+                foundUser = user;
+                break;
+            }
+        }
 
         if (!foundUser) {
             return res.status(401).json({
@@ -151,7 +126,6 @@ app.post('/api/login', (req, res) => {
             success: true,
             userId: foundUser.userId,
             displayName: foundUser.displayName,
-            profileImage: foundUser.profileImage,
             message: 'Giriş başarılı',
         });
     } catch (error) {
@@ -160,23 +134,22 @@ app.post('/api/login', (req, res) => {
     }
 });
 
-/**
- * Kullanıcı listesi
- * Query: ?exclude=userId (kendini listeden çıkar)
- */
 app.get('/api/users', (req, res) => {
     try {
         const excludeId = req.query.exclude;
-        const dbUsers = db.getAllUsers(excludeId);
+        const userList = [];
 
-        const userList = dbUsers.map(u => ({
-            userId: u.userId,
-            email: u.email,
-            displayName: u.displayName,
-            publicKey: u.publicKey,
-            profileImage: u.profileImage,
-            isOnline: onlineSockets.has(u.userId),
-        }));
+        for (let user of users.values()) {
+            if (user.userId !== excludeId) {
+                userList.push({
+                    userId: user.userId,
+                    email: user.email,
+                    displayName: user.displayName,
+                    publicKey: user.publicKey,
+                    isOnline: onlineSockets.has(user.userId),
+                });
+            }
+        }
 
         res.json({ success: true, users: userList });
     } catch (error) {
@@ -185,59 +158,8 @@ app.get('/api/users', (req, res) => {
     }
 });
 
-/**
- * Kullanıcı bilgilerini güncelle (isim veya şifre)
- */
-app.put('/api/user/update', (req, res) => {
-    try {
-        const { userId, displayName, passwordHash } = req.body;
-        
-        if (!userId || !displayName) {
-             return res.status(400).json({ success: false, message: 'Gerekli bilgiler eksik' });
-        }
-
-        const user = db.getUserById(userId);
-        if (!user) {
-            return res.status(404).json({ success: false, message: 'Kullanıcı bulunamadı' });
-        }
-
-        db.updateUser(userId, displayName, passwordHash);
-        console.log(`[Update] Kullanıcı bilgileri güncellendi: ${userId}`);
-        
-        broadcastUserList();
-
-        res.json({ success: true, message: 'Profil güncellendi' });
-    } catch (error) {
-        console.error('[Update] Hata:', error);
-        res.status(500).json({ success: false, message: 'Sunucu hatası' });
-    }
-});
-
-/**
- * Profil resmi yükle/güncelle (Base64)
- */
-app.post('/api/user/avatar', (req, res) => {
-    try {
-        const { userId, imageBase64 } = req.body;
-        
-        if (!userId || !imageBase64) {
-             return res.status(400).json({ success: false, message: 'Resim verisi eksik' });
-        }
-
-        db.updateUserAvatar(userId, imageBase64);
-        console.log(`[Avatar] Profil resmi güncellendi: ${userId}`);
-        
-        broadcastUserList();
-        
-        res.json({ success: true, message: 'Profil resmi güncellendi' });
-    } catch (error) {
-        console.error('[Avatar] Hata:', error);
-        res.status(500).json({ success: false, message: 'Sunucu hatası' });
-    }
-});
-
 // ══════════════════════════════════════
-// SOCKET.IO - GERÇEK ZAMANLI MESAJLAŞMA
+// SOCKET.IO
 // ══════════════════════════════════════
 
 io.on('connection', (socket) => {
@@ -245,28 +167,16 @@ io.on('connection', (socket) => {
 
     console.log(`[Socket] 🔌 Yeni bağlantı: ${socket.id}`);
 
-    /**
-     * Kullanıcı çevrimiçi olduğunu bildirir
-     */
     socket.on('user_online', (userId) => {
         currentUserId = userId;
         onlineSockets.set(userId, socket.id);
-
-        // Kullanıcıyı kendi odasına ekle
         socket.join(userId);
 
         console.log(`[Socket] 🟢 Online: ${userId}`);
-
-        // Tüm kullanıcılara güncel listeyi bildir
         broadcastUserList();
-
-        // Bekleyen mesajları gönder
         deliverPendingMessages(userId, socket);
     });
 
-    /**
-     * Şifreli mesaj gönderme
-     */
     socket.on('send_message', (data) => {
         try {
             const {
@@ -295,60 +205,44 @@ io.on('connection', (socket) => {
                 selfDestructTime: selfDestructTime || 0,
             };
 
-            console.log(`[Socket] 📨 Mesaj: ${senderId} → ${receiverId} (${messageId})`);
+            console.log(`[Socket] 📨 Mesaj: ${senderId} → ${receiverId}`);
 
-            // Alıcı çevrimiçi mi?
             const receiverSocketId = onlineSockets.get(receiverId);
 
             if (receiverSocketId) {
-                // Alıcı online → hemen gönder
                 io.to(receiverId).emit('new_message', message);
                 message.status = 'delivered';
-
-                console.log(`[Socket] ✅ Mesaj teslim edildi: ${messageId}`);
+                console.log(`[Socket] ✅ Mesaj teslim edildi`);
             } else {
-                // Alıcı offline → bekleyen mesajlara ekle
                 if (!pendingMessages.has(receiverId)) {
                     pendingMessages.set(receiverId, []);
                 }
                 pendingMessages.get(receiverId).push(message);
-
-                console.log(`[Socket] 💤 Mesaj beklemeye alındı: ${messageId}`);
+                console.log(`[Socket] 💤 Mesaj beklemeye alındı`);
             }
 
-            // Göndericiye onay
             socket.emit('message_sent', {
                 messageId,
                 timestamp,
                 status: message.status,
             });
         } catch (error) {
-            console.error('[Socket] Mesaj gönderme hatası:', error);
+            console.error('[Socket] Mesaj hatası:', error);
             socket.emit('message_error', { error: 'Mesaj gönderilemedi' });
         }
     });
 
-    /**
-     * Mesaj okundu bildirimi
-     */
     socket.on('message_read', (data) => {
-        const { messageId, senderId } = data;
-
-        // Göndericiye "okundu" bilgisi yolla
+        const { senderId } = data;
         const senderSocketId = onlineSockets.get(senderId);
         if (senderSocketId) {
             io.to(senderId).emit('message_status', {
-                messageId,
+                messageId: data.messageId,
                 status: 'read',
             });
         }
-
-        console.log(`[Socket] 👁️ Okundu: ${messageId}`);
     });
 
-    /**
-     * Yazıyor... bildirimi
-     */
     socket.on('typing', (data) => {
         const { receiverId, isTyping } = data;
         const receiverSocketId = onlineSockets.get(receiverId);
@@ -360,9 +254,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    /**
-     * Bağlantı kesildiğinde
-     */
     socket.on('disconnect', () => {
         if (currentUserId) {
             onlineSockets.delete(currentUserId);
@@ -372,21 +263,15 @@ io.on('connection', (socket) => {
     });
 });
 
-/**
- * Tüm kullanıcılara güncel online listesini gönder
- */
 function broadcastUserList() {
     const onlineIds = Array.from(onlineSockets.keys());
     io.emit('user_list_update', { onlineUsers: onlineIds });
 }
 
-/**
- * Çevrimdışıyken gelen mesajları teslim et
- */
 function deliverPendingMessages(userId, socket) {
     const pending = pendingMessages.get(userId);
     if (pending && pending.length > 0) {
-        console.log(`[Socket] 📬 ${pending.length} bekleyen mesaj teslim ediliyor: ${userId}`);
+        console.log(`[Socket] 📬 ${pending.length} bekleyen mesaj teslim ediliyor`);
         pending.forEach((msg) => {
             msg.status = 'delivered';
             socket.emit('new_message', msg);
@@ -396,16 +281,15 @@ function deliverPendingMessages(userId, socket) {
 }
 
 // ══════════════════════════════════════
-// SUNUCUYU BAŞLAT
+// SUNUCU BAŞLAT
 // ══════════════════════════════════════
 
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log('════════════════════════════════════════');
-    console.log(`🚀 SecureChat Server v1.0`);
+    console.log(`🚀 SecureChat Server v2.0 (In-Memory)`);
     console.log(`📡 Port: ${PORT}`);
     console.log(`🔗 http://localhost:${PORT}`);
-    console.log(`🔗 Health: http://localhost:${PORT}/api/health`);
     console.log('════════════════════════════════════════');
 });
