@@ -225,6 +225,7 @@ io.on('connection', (socket) => {
     socket.on('send_message', (data) => {
         try {
             const {
+                messageId: clientMessageId,
                 senderId,
                 receiverId,
                 encryptedMessage,
@@ -234,7 +235,7 @@ io.on('connection', (socket) => {
                 selfDestructTime,
             } = data;
 
-            const messageId = uuidv4();
+            const messageId = clientMessageId || uuidv4();
             const timestamp = new Date().toISOString();
 
             const message = {
